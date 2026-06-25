@@ -145,13 +145,37 @@ from app.models.user_profile import UserProfile
 # ── 공고 목록 ─────────────────────────────────────────────
 
 @router.get("/posts")
-async def list_job_posts(limit: int = 20):
-    """크롤링된 공고 목록 조회"""
+async def list_job_posts(
+    limit: int = 20,
+    source: str | None = None,       # "saramin" | "jobkorea"
+    keyword: str | None = None,       # 제목/회사명 검색
+    job_role: str | None = None,      # "백엔드" | "AI/ML" 등
+):
+    """크롤링된 공고 목록 조회 (필터링 지원)"""
+    from sqlalchemy import or_
     async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(JobPost).order_by(JobPost.created_at.desc()).limit(limit)
-        )
+        query = select(JobPost).order_by(JobPost.created_at.desc())
+
+        if source:
+            query = query.where(JobPost.source == source)
+        if keyword:
+            query = query.where(
+                or_(
+                    JobPost.title.ilike(f"%{keyword}%"),
+                    JobPost.company.ilike(f"%{keyword}%"),
+                )
+            )
+
+        query = query.limit(limit)
+        result = await session.execute(query)
         posts = result.scalars().all()
+
+    # job_role 필터는 JSON 컬럼이라 Python에서 처리
+    if job_role:
+        posts = [
+            p for p in posts
+            if p.keywords and job_role in p.keywords.get("job_role", "")
+        ]
 
     return [
         {

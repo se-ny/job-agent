@@ -98,8 +98,25 @@ with tab1:
 with tab2:
     st.header("📋 크롤링된 공고 목록")
 
+    # 필터 UI
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        filter_source = st.selectbox("플랫폼 필터", ["전체", "saramin", "jobkorea"])
+    with col2:
+        filter_keyword = st.text_input("제목/회사 검색", placeholder="예: 카카오, AI")
+    with col3:
+        filter_role = st.text_input("직무 필터", placeholder="예: 백엔드, AI/ML")
+
     if st.button("🔄 목록 불러오기"):
-        res = requests.get(f"{API_BASE}/jobs/posts?limit=20")
+        params = {"limit": 20}
+        if filter_source != "전체":
+            params["source"] = filter_source
+        if filter_keyword:
+            params["keyword"] = filter_keyword
+        if filter_role:
+            params["job_role"] = filter_role
+
+        res = requests.get(f"{API_BASE}/jobs/posts", params=params)
         if res.ok:
             st.session_state["posts"] = res.json()
         else:
@@ -113,7 +130,6 @@ with tab2:
             with st.expander(f"🏢 {post['company']} — {post['title']}"):
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    # 필수/우대 스킬
                     if post["required_skills"]:
                         st.write("**🔴 필수 스킬**")
                         st.write(" · ".join(post["required_skills"]))

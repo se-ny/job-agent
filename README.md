@@ -188,6 +188,19 @@ job-agent/
 ```
 
 ---
+## 📸 스크린샷
+
+### 크롤링
+![크롤링](docs/images/crawl.png)
+
+### 공고 목록
+![공고 목록](docs/images/posts.png)
+
+### AI Top3 추천
+![AI 추천](docs/images/recommend.png)
+
+### 갭 분석 리포트
+![갭 분석](docs/images/report.png)
 
 ## 📝 리포트 예시
 
