@@ -30,7 +30,6 @@ with st.sidebar:
 
     st.divider()
 
-    # 프로필 생성 폼
     with st.expander("➕ 프로필 생성"):
         new_name = st.text_input("이름")
         new_skills = st.text_input("보유 스킬 (쉼표로 구분)", placeholder="Python, FastAPI, Docker")
@@ -54,14 +53,15 @@ with st.sidebar:
             else:
                 st.warning("이름과 스킬을 입력하세요")
 
-# ── 메인: 크롤링 + 분석 ────────────────────────────────────
-col1, col2 = st.columns([1, 1])
+# ── 탭 구성 ────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 크롤링", "📋 공고 목록", "🏆 AI 추천", "📊 갭 분석"])
 
-with col1:
+# ── 탭1: 크롤링 ────────────────────────────────────────────
+with tab1:
     st.header("🔍 채용공고 크롤링")
 
     source = st.selectbox("사이트", ["saramin", "jobkorea"])
-    keyword = st.text_input("검색 키워드", placeholder="예: FastAPI, AI 엔지니어")
+    keyword = st.text_input("검색 키워드", placeholder="예: FastAPI, AI 에이전트")
     limit = st.slider("크롤링 개수", min_value=1, max_value=10, value=3)
 
     if st.button("🚀 크롤링 시작", disabled=not keyword):
@@ -78,7 +78,6 @@ with col1:
             task_id = res.json()["task_id"]
             st.info(f"task_id: `{task_id}`")
 
-            # 폴링
             for _ in range(60):
                 time.sleep(3)
                 result_res = requests.get(f"{API_BASE}/jobs/crawl/{task_id}")
@@ -93,19 +92,107 @@ with col1:
                     st.error(f"크롤링 실패: {result['error']}")
                     st.stop()
             else:
-                st.warning("타임아웃 — 나중에 다시 확인해주세요")
+                st.warning("타임아웃")
 
-with col2:
-    st.header("🧠 Agent 분석")
+# ── 탭2: 공고 목록 ─────────────────────────────────────────
+with tab2:
+    st.header("📋 크롤링된 공고 목록")
+
+    if st.button("🔄 목록 불러오기"):
+        res = requests.get(f"{API_BASE}/jobs/posts?limit=20")
+        if res.ok:
+            st.session_state["posts"] = res.json()
+        else:
+            st.error("공고 목록 조회 실패")
+
+    posts = st.session_state.get("posts", [])
+
+    if posts:
+        st.write(f"**총 {len(posts)}개 공고**")
+        for post in posts:
+            with st.expander(f"🏢 {post['company']} — {post['title']}"):
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    # 필수/우대 스킬
+                    if post["required_skills"]:
+                        st.write("**🔴 필수 스킬**")
+                        st.write(" · ".join(post["required_skills"]))
+                    if post["preferred_skills"]:
+                        st.write("**🔵 우대 스킬**")
+                        st.write(" · ".join(post["preferred_skills"]))
+                    if not post["required_skills"] and not post["preferred_skills"]:
+                        st.caption("갭 분석 후 스킬 정보가 표시됩니다")
+                with col2:
+                    st.write(f"**플랫폼:** {post['source']}")
+                    if post["job_role"]:
+                        st.write(f"**직무:** {post['job_role']}")
+                    if post["experience_years"]:
+                        st.write(f"**경력:** {post['experience_years']}년")
+                    if post["url"] and post["url"] != "manual":
+                        st.link_button("🔗 원문 보기", post["url"])
+    else:
+        st.info("'목록 불러오기' 버튼을 눌러주세요")
+
+# ── 탭3: AI 추천 ───────────────────────────────────────────
+with tab3:
+    st.header("🏆 AI Top3 공고 추천")
+
+    saved_ids = st.session_state.get("saved_ids", [])
+
+    if not saved_ids:
+        st.info("먼저 크롤링 탭에서 공고를 수집하세요")
+    elif not user_profile_id:
+        st.warning("사이드바에서 프로필을 선택하세요")
+    else:
+        st.write(f"**분석 대상:** {len(saved_ids)}개 공고")
+
+        if st.button("🤖 AI 추천 받기"):
+            with st.spinner("AI가 공고를 분석 중..."):
+                res = requests.post(f"{API_BASE}/jobs/recommend", json={
+                    "job_post_ids": saved_ids,
+                    "user_profile_id": user_profile_id,
+                })
+
+                if res.ok:
+                    data = res.json()
+                    recommendations = data.get("recommendations", [])
+
+                    medals = ["🥇", "🥈", "🥉"]
+                    for rec in recommendations:
+                        rank = rec["rank"] - 1
+                        medal = medals[rank] if rank < 3 else "🏅"
+
+                        with st.container(border=True):
+                            st.subheader(f"{medal} {rec['rank']}위 — {rec['title']}")
+                            st.write(f"**회사:** {rec['company']}")
+
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("매칭 점수", f"{rec['match_score']}%")
+                            with col2:
+                                st.write("**필수 스킬**")
+                                for s in rec.get("required_skills", []):
+                                    st.badge(s, color="red")
+                            with col3:
+                                st.write("**우대 스킬**")
+                                for s in rec.get("preferred_skills", []):
+                                    st.badge(s, color="blue")
+
+                            st.write("**💡 추천 이유**")
+                            st.info(rec["reason"])
+                else:
+                    st.error(f"추천 실패: {res.text}")
+
+# ── 탭4: 갭 분석 ───────────────────────────────────────────
+with tab4:
+    st.header("📊 갭 분석 리포트")
 
     saved_ids = st.session_state.get("saved_ids", [])
 
     if saved_ids:
         st.write(f"**분석 대상:** {len(saved_ids)}개 공고")
-        for sid in saved_ids:
-            st.code(sid, language=None)
     else:
-        st.info("먼저 크롤링을 완료하세요")
+        st.info("먼저 크롤링 탭에서 공고를 수집하세요")
 
     if st.button("🔬 분석 시작", disabled=not saved_ids or not user_profile_id):
         with st.spinner("Agent 분석 중... (1~2분 소요)"):
@@ -118,9 +205,7 @@ with col2:
                 st.stop()
 
             task_id = res.json()["task_id"]
-            st.info(f"task_id: `{task_id}`")
 
-            # 폴링
             for _ in range(60):
                 time.sleep(5)
                 result_res = requests.get(f"{API_BASE}/jobs/analyze/{task_id}")
@@ -137,22 +222,14 @@ with col2:
             else:
                 st.warning("타임아웃")
 
-# ── 리포트 출력 ────────────────────────────────────────────
-analysis_id = st.session_state.get("analysis_id")
-
-if analysis_id:
-    st.divider()
-    st.header("📋 분석 리포트")
-
-    report_res = requests.get(f"{API_BASE}/jobs/report/{analysis_id}/markdown")
-    if report_res.ok:
-        st.markdown(report_res.text)
-
-        st.download_button(
-            label="📥 리포트 다운로드 (.md)",
-            data=report_res.text,
-            file_name=f"report_{analysis_id[:8]}.md",
-            mime="text/markdown",
-        )
-    else:
-        st.error("리포트 조회 실패")
+    analysis_id = st.session_state.get("analysis_id")
+    if analysis_id:
+        report_res = requests.get(f"{API_BASE}/jobs/report/{analysis_id}/markdown")
+        if report_res.ok:
+            st.markdown(report_res.text)
+            st.download_button(
+                label="📥 리포트 다운로드 (.md)",
+                data=report_res.text,
+                file_name=f"report_{analysis_id[:8]}.md",
+                mime="text/markdown",
+            )

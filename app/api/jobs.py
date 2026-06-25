@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from app.models.job_post import JobPost
 
 from app.core.celery_app import celery_app
 from app.core.database import AsyncSessionLocal
@@ -138,3 +139,121 @@ async def get_report_markdown(analysis_id: str):
         raise HTTPException(status_code=404, detail="분석 결과를 찾을 수 없습니다")
 
     return analysis.report_md
+
+from app.models.user_profile import UserProfile
+
+# ── 공고 목록 ─────────────────────────────────────────────
+
+@router.get("/posts")
+async def list_job_posts(limit: int = 20):
+    """크롤링된 공고 목록 조회"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(JobPost).order_by(JobPost.created_at.desc()).limit(limit)
+        )
+        posts = result.scalars().all()
+
+    return [
+        {
+            "id": p.id,
+            "source": p.source,
+            "title": p.title,
+            "company": p.company,
+            "url": p.url,
+            "required_skills": p.keywords.get("required_skills", []) if p.keywords else [],
+            "preferred_skills": p.keywords.get("preferred_skills", []) if p.keywords else [],
+            "experience_years": p.keywords.get("experience_years", 0) if p.keywords else 0,
+            "job_role": p.keywords.get("job_role", "") if p.keywords else "",
+            "summary": p.raw_text[:200] if p.raw_text else "",
+            "created_at": p.created_at,
+        }
+        for p in posts
+    ]
+
+
+# ── AI 추천 ───────────────────────────────────────────────
+
+class RecommendRequest(BaseModel):
+    job_post_ids: list[str]
+    user_profile_id: int
+
+
+@router.post("/recommend")
+async def recommend_jobs(req: RecommendRequest):
+    """내 프로필 기반 Top3 공고 추천"""
+    from langchain_groq import ChatGroq
+    from app.core.config import settings
+    import json
+
+    async with AsyncSessionLocal() as session:
+        # 공고 조회
+        result = await session.execute(
+            select(JobPost).where(JobPost.id.in_(req.job_post_ids))
+        )
+        posts = result.scalars().all()
+
+        # 프로필 조회
+        profile_result = await session.execute(
+            select(UserProfile).where(UserProfile.id == req.user_profile_id)
+        )
+        profile = profile_result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="프로필을 찾을 수 없습니다")
+
+    if not posts:
+        raise HTTPException(status_code=404, detail="공고를 찾을 수 없습니다")
+
+    # LLM 추천 요청
+    llm = ChatGroq(
+        model="llama-3.3-70b-versatile",
+        api_key=settings.GROQ_API_KEY,
+        temperature=0,
+    )
+
+    posts_summary = "\n\n".join([
+        f"[공고 ID: {p.id}]\n제목: {p.title}\n회사: {p.company}\n내용: {p.raw_text[:300]}"
+        for p in posts
+    ])
+
+    prompt = f"""다음은 사용자 프로필과 채용공고 목록입니다.
+
+사용자 프로필:
+- 이름: {profile.name}
+- 보유 스킬: {", ".join(profile.current_skills)}
+- 경력: {profile.experience_months}개월
+- 소개: {profile.bio or "없음"}
+
+채용공고 목록:
+{posts_summary}
+
+위 프로필을 바탕으로 가장 적합한 공고 Top3를 추천하고 이유를 설명하세요.
+반드시 JSON 형식으로만 응답하세요.
+
+{{
+  "recommendations": [
+    {{
+      "rank": 1,
+      "job_post_id": "공고ID",
+      "title": "공고제목",
+      "company": "회사명",
+      "reason": "추천 이유 (보유 스킬과의 연관성, 성장 가능성 등 구체적으로)",
+      "match_score": 85.0,
+      "required_skills": ["필수스킬1", "필수스킬2"],
+      "preferred_skills": ["우대스킬1"]
+    }}
+  ]
+}}"""
+
+    response = llm.invoke(prompt)
+
+    try:
+        text = response.content.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        result = json.loads(text.strip())
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"추천 파싱 실패: {e}")
