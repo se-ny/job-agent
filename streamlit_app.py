@@ -54,8 +54,7 @@ with st.sidebar:
                 st.warning("이름과 스킬을 입력하세요")
 
 # ── 탭 구성 ────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["🔍 크롤링", "📋 공고 목록", "🏆 AI 추천", "📊 갭 분석"])
-
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔍 크롤링", "📋 공고 목록", "🏆 AI 추천", "📊 갭 분석", "🕒 분석 히스토리", "⭐ 북마크"])
 # ── 탭1: 크롤링 ────────────────────────────────────────────
 with tab1:
     st.header("🔍 채용공고 크롤링")
@@ -146,6 +145,16 @@ with tab2:
                         st.write(f"**경력:** {post['experience_years']}년")
                     if post["url"] and post["url"] != "manual":
                         st.link_button("🔗 원문 보기", post["url"])
+                    if st.button("⭐ 북마크", key=f"bm_{post['id']}"):
+                        res = requests.post(f"{API_BASE}/bookmarks/", json={
+                            "job_post_id": post["id"],
+                            "user_profile_id": user_profile_id,
+                        })
+                        if res.ok:
+                            st.success("북마크 추가!")
+                        else:
+                            st.warning("이미 북마크된 공고입니다")
+
     else:
         st.info("'목록 불러오기' 버튼을 눌러주세요")
 
@@ -249,3 +258,72 @@ with tab4:
                 file_name=f"report_{analysis_id[:8]}.md",
                 mime="text/markdown",
             )
+# ── 탭5: 분석 히스토리 ─────────────────────────────────────
+with tab5:
+    st.header("🕒 분석 히스토리")
+
+    if st.button("🔄 히스토리 불러오기"):
+        res = requests.get(f"{API_BASE}/jobs/history")
+        if res.ok:
+            st.session_state["history"] = res.json()
+        else:
+            st.error("히스토리 조회 실패")
+
+    history = st.session_state.get("history", [])
+
+    if history:
+        for h in history:
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    st.write(f"**분석 ID:** `{h['analysis_id'][:8]}...`")
+                    st.write(f"**분석 공고 수:** {h['job_count']}개")
+                with col2:
+                    st.metric("매칭 점수", f"{h['match_score']}%")
+                with col3:
+                    st.write(f"**분석 일시:** {h['created_at'][:10]}")
+                    if st.button("리포트 보기", key=h['analysis_id']):
+                        st.session_state["analysis_id"] = h['analysis_id']
+                        report_res = requests.get(f"{API_BASE}/jobs/report/{h['analysis_id']}/markdown")
+                        if report_res.ok:
+                            st.markdown(report_res.text)
+    else:
+        st.info("'히스토리 불러오기' 버튼을 눌러주세요")
+
+    # ── 탭6: 북마크 ────────────────────────────────────────────
+with tab6:
+    st.header("⭐ 북마크")
+
+    if not user_profile_id:
+        st.warning("사이드바에서 프로필을 선택하세요")
+    else:
+        if st.button("🔄 북마크 불러오기"):
+            res = requests.get(f"{API_BASE}/bookmarks/{user_profile_id}")
+            if res.ok:
+                st.session_state["bookmarks"] = res.json()
+
+        bookmarks = st.session_state.get("bookmarks", [])
+
+        if bookmarks:
+            st.write(f"**총 {len(bookmarks)}개 북마크**")
+            for bm in bookmarks:
+                with st.expander(f"⭐ {bm['company']} — {bm['title']}"):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        if bm["required_skills"]:
+                            st.write("**🔴 필수 스킬**")
+                            st.write(" · ".join(bm["required_skills"]))
+                        if bm["preferred_skills"]:
+                            st.write("**🔵 우대 스킬**")
+                            st.write(" · ".join(bm["preferred_skills"]))
+                    with col2:
+                        st.write(f"**플랫폼:** {bm['source']}")
+                        if bm["url"] and bm["url"] != "manual":
+                            st.link_button("🔗 원문 보기", bm["url"])
+                        if st.button("🗑️ 북마크 삭제", key=bm["bookmark_id"]):
+                            del_res = requests.delete(f"{API_BASE}/bookmarks/{bm['bookmark_id']}")
+                            if del_res.ok:
+                                st.success("삭제됐습니다")
+                                st.rerun()
+        else:
+            st.info("북마크가 없습니다. 공고 목록에서 북마크를 추가하세요")

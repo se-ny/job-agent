@@ -240,6 +240,8 @@ async def recommend_jobs(req: RecommendRequest):
         for p in posts
     ])
 
+
+
     prompt = f"""다음은 사용자 프로필과 채용공고 목록입니다.
 
 사용자 프로필:
@@ -281,3 +283,26 @@ async def recommend_jobs(req: RecommendRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"추천 파싱 실패: {e}")
+    
+# ── 분석 히스토리 ──────────────────────────────────────────
+
+@router.get("/history")
+async def get_analysis_history(limit: int = 10):
+    """분석 히스토리 목록 조회"""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(AnalysisResult).order_by(AnalysisResult.created_at.desc()).limit(limit)
+        )
+        analyses = result.scalars().all()
+
+    return [
+        {
+            "analysis_id": a.id,
+            "job_post_ids": a.job_post_ids,
+            "job_count": len(a.job_post_ids) if a.job_post_ids else 0,
+            "match_score": a.gap_analysis.get("match_score", 0) if a.gap_analysis else 0,
+            "errors": a.errors,
+            "created_at": a.created_at,
+        }
+        for a in analyses
+    ]

@@ -1,5 +1,9 @@
 import asyncio
 import logging
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from sqlalchemy import select
 
 from app.core.celery_app import celery_app
@@ -29,7 +33,17 @@ def crawl_jobs_task(self, site: str, keyword: str, limit: int = 1):
 
             async with SessionLocal() as session:
                 jobs = []
+                skipped = 0
                 for post in posts:
+                    # URL 중복 체크
+                    existing = await session.execute(
+                        select(JobPost).where(JobPost.url == post.url)
+                    )
+                    if existing.scalar_one_or_none():
+                        skipped += 1
+                        logger.info(f"[crawl] 중복 스킵: {post.url}")
+                        continue
+
                     job = JobPost(
                         source=post.source,
                         title=post.title,
@@ -39,17 +53,19 @@ def crawl_jobs_task(self, site: str, keyword: str, limit: int = 1):
                     )
                     jobs.append(job)
 
-                session.add_all(jobs)
-                await session.commit()
+                if jobs:
+                    session.add_all(jobs)
+                    await session.commit()
 
-                saved_ids = []
-                for job in jobs:
-                    await session.refresh(job)
-                    saved_ids.append(job.id)
+                    saved_ids = []
+                    for job in jobs:
+                        await session.refresh(job)
+                        saved_ids.append(job.id)
+                else:
+                    saved_ids = []
 
-            await engine.dispose()
-            logger.info(f"[crawl] {site} '{keyword}' — {len(saved_ids)}개 저장")
-            return {"saved_ids": saved_ids, "count": len(saved_ids)}
+            logger.info(f"[crawl] {site} '{keyword}' — 저장 {len(saved_ids)}개, 중복 스킵 {skipped}개")
+            return {"saved_ids": saved_ids, "count": len(saved_ids), "skipped": skipped}
 
         except Exception as e:
             await engine.dispose()
