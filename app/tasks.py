@@ -109,15 +109,24 @@ def analyze_jobs_task(self, job_post_ids: list[str], user_profile_id: int):
                 ]
 
                 logger.info(f"[analyze] Agent 시작 — 공고 {len(posts_input)}개, user_profile_id={user_profile_id}")
-                final_state = await job_agent.ainvoke({
-                    "job_posts": posts_input,
-                    "user_profile_id": user_profile_id,
-                    "keywords_list": [],
-                    "stack_analysis": {},
-                    "gap_analysis": {},
-                    "report_md": "",
-                    "errors": [],
-                })
+                final_state = await job_agent.ainvoke(
+                    {
+                        "job_posts": posts_input,
+                        "user_profile_id": user_profile_id,
+                        "current_post_index": 0,
+                        "keywords_list": [],
+                        "stack_analysis": {},
+                        "gap_analysis": {},
+                        "report_md": "",
+                        "skipped_posts": [],
+                        "retry_count": 0,
+                        "total_retry_count": 0,
+                        "reflection_notes": [],
+                        "is_report_approved": False,
+                        "errors": [],
+                    },
+                    config={"configurable": {"session": session}},  # ✅ 세션 주입
+                )
 
                 # 공고별 키워드 DB 저장
                 keywords_list = final_state.get("keywords_list", [])

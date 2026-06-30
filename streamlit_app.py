@@ -5,6 +5,79 @@ import requests
 API_BASE = "http://localhost:8000"
 
 st.set_page_config(page_title="Job Agent", page_icon="🤖", layout="wide")
+
+st.markdown("""
+<style>
+/* 뱃지 스타일 */
+.skill-badge-required {
+    display: inline-block;
+    background-color: #ff4b4b22;
+    color: #ff4b4b;
+    border: 1px solid #ff4b4b;
+    border-radius: 20px;
+    padding: 2px 10px;
+    margin: 2px;
+    font-size: 13px;
+    font-weight: 500;
+}
+.skill-badge-preferred {
+    display: inline-block;
+    background-color: #0068c922;
+    color: #4da6ff;
+    border: 1px solid #0068c9;
+    border-radius: 20px;
+    padding: 2px 10px;
+    margin: 2px;
+    font-size: 13px;
+    font-weight: 500;
+}
+.skill-badge-profile {
+    display: inline-block;
+    background-color: #09ab3b22;
+    color: #09ab3b;
+    border: 1px solid #09ab3b;
+    border-radius: 20px;
+    padding: 2px 8px;
+    margin: 2px;
+    font-size: 12px;
+}
+
+/* 프로그레스바 */
+.progress-bar-wrap {
+    background-color: #333;
+    border-radius: 10px;
+    height: 12px;
+    width: 100%;
+    margin-top: 4px;
+}
+.progress-bar-fill {
+    height: 12px;
+    border-radius: 10px;
+    background: linear-gradient(90deg, #09ab3b, #4da6ff);
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── 헬퍼 함수 ──────────────────────────────────────────────
+def render_skill_badges(skills: list, badge_type: str = "required"):
+    if not skills:
+        return
+    css_class = f"skill-badge-{badge_type}"
+    badges = " ".join([f'<span class="{css_class}">{s}</span>' for s in skills])
+    st.markdown(badges, unsafe_allow_html=True)
+
+
+def render_progress_bar(score: float):
+    color = "#ff4b4b" if score < 40 else "#ffa500" if score < 70 else "#09ab3b"
+    st.markdown(f"""
+    <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" style="width:{score}%; background: linear-gradient(90deg, {color}, #4da6ff);"></div>
+    </div>
+    <p style="text-align:right; font-size:13px; color:{color}; margin:0">{score}%</p>
+    """, unsafe_allow_html=True)
+
+
 st.title("🤖 Job Agent — 채용공고 분석")
 
 # ── 사이드바: 프로필 설정 ───────────────────────────────────
@@ -20,7 +93,8 @@ with st.sidebar:
         user_profile_id = profile_options[selected]
 
         selected_profile = next(p for p in profiles if p["id"] == user_profile_id)
-        st.write("**보유 스킬:**", ", ".join(selected_profile["current_skills"]))
+        st.write("**보유 스킬:**")
+        render_skill_badges(selected_profile["current_skills"], "profile")
         st.write("**경력:**", f"{selected_profile['experience_months']}개월")
         if selected_profile["bio"]:
             st.write("**소개:**", selected_profile["bio"])
@@ -55,6 +129,7 @@ with st.sidebar:
 
 # ── 탭 구성 ────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🔍 크롤링", "📋 공고 목록", "🏆 AI 추천", "📊 갭 분석", "🕒 분석 히스토리", "⭐ 북마크"])
+
 # ── 탭1: 크롤링 ────────────────────────────────────────────
 with tab1:
     st.header("🔍 채용공고 크롤링")
@@ -97,7 +172,6 @@ with tab1:
 with tab2:
     st.header("📋 크롤링된 공고 목록")
 
-    # 필터 UI
     col1, col2, col3 = st.columns(3)
     with col1:
         filter_source = st.selectbox("플랫폼 필터", ["전체", "saramin", "jobkorea"])
@@ -131,10 +205,10 @@ with tab2:
                 with col1:
                     if post["required_skills"]:
                         st.write("**🔴 필수 스킬**")
-                        st.write(" · ".join(post["required_skills"]))
+                        render_skill_badges(post["required_skills"], "required")
                     if post["preferred_skills"]:
                         st.write("**🔵 우대 스킬**")
-                        st.write(" · ".join(post["preferred_skills"]))
+                        render_skill_badges(post["preferred_skills"], "preferred")
                     if not post["required_skills"] and not post["preferred_skills"]:
                         st.caption("갭 분석 후 스킬 정보가 표시됩니다")
                 with col2:
@@ -154,7 +228,6 @@ with tab2:
                             st.success("북마크 추가!")
                         else:
                             st.warning("이미 북마크된 공고입니다")
-
     else:
         st.info("'목록 불러오기' 버튼을 눌러주세요")
 
@@ -193,15 +266,14 @@ with tab3:
 
                             col1, col2, col3 = st.columns(3)
                             with col1:
-                                st.metric("매칭 점수", f"{rec['match_score']}%")
+                                st.write("**매칭 점수**")
+                                render_progress_bar(rec['match_score'])
                             with col2:
                                 st.write("**필수 스킬**")
-                                for s in rec.get("required_skills", []):
-                                    st.badge(s, color="red")
+                                render_skill_badges(rec.get("required_skills", []), "required")
                             with col3:
                                 st.write("**우대 스킬**")
-                                for s in rec.get("preferred_skills", []):
-                                    st.badge(s, color="blue")
+                                render_skill_badges(rec.get("preferred_skills", []), "preferred")
 
                             st.write("**💡 추천 이유**")
                             st.info(rec["reason"])
@@ -258,6 +330,7 @@ with tab4:
                 file_name=f"report_{analysis_id[:8]}.md",
                 mime="text/markdown",
             )
+
 # ── 탭5: 분석 히스토리 ─────────────────────────────────────
 with tab5:
     st.header("🕒 분석 히스토리")
@@ -279,7 +352,8 @@ with tab5:
                     st.write(f"**분석 ID:** `{h['analysis_id'][:8]}...`")
                     st.write(f"**분석 공고 수:** {h['job_count']}개")
                 with col2:
-                    st.metric("매칭 점수", f"{h['match_score']}%")
+                    st.write("**매칭 점수**")
+                    render_progress_bar(h['match_score'])
                 with col3:
                     st.write(f"**분석 일시:** {h['created_at'][:10]}")
                     if st.button("리포트 보기", key=h['analysis_id']):
@@ -290,7 +364,7 @@ with tab5:
     else:
         st.info("'히스토리 불러오기' 버튼을 눌러주세요")
 
-    # ── 탭6: 북마크 ────────────────────────────────────────────
+# ── 탭6: 북마크 ────────────────────────────────────────────
 with tab6:
     st.header("⭐ 북마크")
 
@@ -312,10 +386,10 @@ with tab6:
                     with col1:
                         if bm["required_skills"]:
                             st.write("**🔴 필수 스킬**")
-                            st.write(" · ".join(bm["required_skills"]))
+                            render_skill_badges(bm["required_skills"], "required")
                         if bm["preferred_skills"]:
                             st.write("**🔵 우대 스킬**")
-                            st.write(" · ".join(bm["preferred_skills"]))
+                            render_skill_badges(bm["preferred_skills"], "preferred")
                     with col2:
                         st.write(f"**플랫폼:** {bm['source']}")
                         if bm["url"] and bm["url"] != "manual":

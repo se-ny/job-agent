@@ -6,7 +6,7 @@ import operator
 from langgraph.graph import StateGraph, END
 from langchain_groq import ChatGroq
 from app.core.config import settings
-from app.agent.tools import extract_keywords, analyze_stack, analyze_gap
+from app.agent.tools import extract_keywords_react, analyze_stack, analyze_gap
 from app.agent.prompts import SYSTEM_PROMPT, REPORT_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -20,36 +20,74 @@ llm = ChatGroq(
 
 # ── 상태 정의 ──────────────────────────────────────────────
 class AgentState(TypedDict):
-    job_posts: list[dict]          # 입력: 크롤링된 공고 리스트
-    user_profile_id: int           # 입력: 갭 분석에 사용할 프로필 ID
-    keywords_list: list[dict]      # 추출된 키워드 모음
-    stack_analysis: dict           # 스택 빈도 분석 결과
-    gap_analysis: dict             # 갭 분석 결과
-    report_md: str                 # 최종 마크다운 리포트
-    errors: Annotated[list[str], operator.add]  # 누적 에러
+    # [입력 및 기본 데이터]
+    job_posts: list[dict]
+    user_profile_id: int
+
+    # 루프 제어용
+    current_post_index: int
+
+    # [중간 분석 데이터]
+    keywords_list: list[dict]
+    stack_analysis: dict
+    gap_analysis: dict
+    report_md: str
+
+    # [에이전트 판단 기록 및 반성 지표]
+    skipped_posts: Annotated[list[dict], operator.add]
+    retry_count: int
+    total_retry_count: int
+
+    reflection_notes: list[str]
+    is_report_approved: bool
+    errors: Annotated[list[str], operator.add]
 
 
 # ── 노드 함수 ──────────────────────────────────────────────
 def node_extract(state: AgentState) -> dict:
-    """각 공고에서 키워드를 추출하는 노드"""
-    logger.info(f"[extract] 공고 {len(state['job_posts'])}개 키워드 추출 시작")
-    keywords_list = []
-    errors = []
+    """공고를 하나씩 순회하며 품질 판단 후 키워드 추출 (ReAct)"""
+    idx = state.get("current_post_index", 0)
+    posts = state["job_posts"]
 
-    for post in state["job_posts"]:
-        job_text = f"{post.get('title', '')}\n{post.get('description', '')}"
-        try:
-            result = extract_keywords.invoke({"job_text": job_text})
-            # 공고 ID 추적용으로 같이 저장
-            result["job_post_id"] = post.get("id")
-            keywords_list.append(result)
-        except Exception as e:
-            msg = f"키워드 추출 실패 (id={post.get('id')}): {e}"
-            logger.error(msg)
-            errors.append(msg)
+    if idx >= len(posts):
+        return {}
 
-    logger.info(f"[extract] 완료 — 성공 {len(keywords_list)}개, 실패 {len(errors)}개")
-    return {"keywords_list": keywords_list, "errors": errors}
+    post = posts[idx]
+    job_text = f"{post.get('title', '')}\n{post.get('description', '')}"
+
+    logger.info(f"[extract] ({idx+1}/{len(posts)}) 공고 판단 중: {post.get('title', '')[:30]}")
+
+    try:
+        result = extract_keywords_react(job_text)
+    except Exception as e:
+        msg = f"키워드 추출 실패 (id={post.get('id')}): {e}"
+        logger.error(msg)
+        return {
+            "current_post_index": idx + 1,
+            "errors": [msg],
+        }
+
+    if result.get("skip"):
+        logger.info(f"[extract] 스킵: {result.get('reason')}")
+        return {
+            "current_post_index": idx + 1,
+            "skipped_posts": [{"id": post.get("id"), "reason": result.get("reason")}],
+        }
+
+    result["job_post_id"] = post.get("id")
+    existing_keywords = state.get("keywords_list", [])
+    return {
+        "current_post_index": idx + 1,
+        "keywords_list": existing_keywords + [result],
+    }
+
+
+def should_continue_extract(state: AgentState) -> str:
+    """모든 공고를 처리했으면 다음 단계로, 아니면 계속 루프"""
+    idx = state.get("current_post_index", 0)
+    if idx >= len(state["job_posts"]):
+        return "analyze_stack"
+    return "extract"
 
 
 def node_analyze_stack(state: AgentState) -> dict:
@@ -65,13 +103,15 @@ def node_analyze_stack(state: AgentState) -> dict:
         return {"stack_analysis": {}, "errors": [msg]}
 
 
-async def node_analyze_gap(state: AgentState) -> dict:
+async def node_analyze_gap(state: AgentState, config=None) -> dict:
     """사용자 프로필과 스택 분석 결과로 갭을 분석하는 노드"""
     logger.info(f"[analyze_gap] user_profile_id={state['user_profile_id']} 갭 분석 시작")
+    session = config["configurable"].get("session") if config else None
     try:
         result = await analyze_gap.ainvoke({
             "stack_analysis": state["stack_analysis"],
             "user_profile_id": state["user_profile_id"],
+            "session": session,
         })
         logger.info("[analyze_gap] 완료")
         return {"gap_analysis": result}
@@ -79,6 +119,54 @@ async def node_analyze_gap(state: AgentState) -> dict:
         msg = f"갭 분석 실패: {e}"
         logger.error(msg)
         return {"gap_analysis": {}, "errors": [msg]}
+    
+
+def node_reflect_gap(state: AgentState) -> dict:
+    """갭 분석 결과의 신뢰도를 검토 (Reflection)"""
+    from app.agent.tools import reflect_on_gap_analysis
+
+    logger.info("[reflect] 갭 분석 신뢰도 검토 중")
+    try:
+        result = reflect_on_gap_analysis.invoke({
+            "gap_analysis": state["gap_analysis"],
+            "stack_analysis": state["stack_analysis"],
+        })
+        is_reliable = result.get("is_reliable", True)
+        reason = result.get("reason", "")
+
+        logger.info(f"[reflect] 결과: {'신뢰함' if is_reliable else '재분석 필요'} — {reason}")
+
+        notes = state.get("reflection_notes", [])
+        return {
+            "reflection_notes": notes + [reason],
+            "is_report_approved": is_reliable,
+        }
+    except Exception as e:
+        logger.error(f"[reflect] 실패: {e}")
+        # 검토 실패 시 통과 처리 (무한루프 방지)
+        return {"is_report_approved": True}
+
+
+def should_retry_gap(state: AgentState) -> str:
+    """신뢰도 검토 결과에 따라 재분석 또는 다음 단계로 분기"""
+    is_approved = state.get("is_report_approved", True)
+    total_retry = state.get("total_retry_count", 0)
+
+    if not is_approved and total_retry < 2:
+        logger.info(f"[reflect] 재분석 진행 (시도 {total_retry + 1}/2)")
+        return "retry"
+
+    if not is_approved:
+        logger.info("[reflect] 최대 재시도 도달 — 현재 결과로 진행")
+
+    return "proceed"
+
+
+def node_increment_retry(state: AgentState) -> dict:
+    """재시도 카운트 증가"""
+    total_retry = state.get("total_retry_count", 0)
+    return {"total_retry_count": total_retry + 1}
+
 
 
 def node_report(state: AgentState) -> dict:
@@ -107,16 +195,38 @@ def build_graph():
     graph.add_node("extract", node_extract)
     graph.add_node("analyze_stack", node_analyze_stack)
     graph.add_node("analyze_gap", node_analyze_gap)
+    graph.add_node("reflect_gap", node_reflect_gap)
+    graph.add_node("increment_retry", node_increment_retry)
     graph.add_node("report", node_report)
 
     graph.set_entry_point("extract")
-    graph.add_edge("extract", "analyze_stack")
+
+    graph.add_conditional_edges(
+        "extract",
+        should_continue_extract,
+        {
+            "extract": "extract",
+            "analyze_stack": "analyze_stack",
+        }
+    )
+
     graph.add_edge("analyze_stack", "analyze_gap")
-    graph.add_edge("analyze_gap", "report")
+    graph.add_edge("analyze_gap", "reflect_gap")
+
+    # ✅ 재시도 분기
+    graph.add_conditional_edges(
+        "reflect_gap",
+        should_retry_gap,
+        {
+            "retry": "increment_retry",
+            "proceed": "report",
+        }
+    )
+    graph.add_edge("increment_retry", "analyze_gap")  # 재분석 루프
+
     graph.add_edge("report", END)
 
     return graph.compile()
 
 
-# 싱글턴으로 컴파일
 job_agent = build_graph()
